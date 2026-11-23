@@ -1,6 +1,6 @@
 // Tiny IndexedDB wrapper. All data stays on the device.
 const DB = (() => {
-  const NAME = 'fitbox', VERSION = 2;
+  const NAME = 'fitbox', VERSION = 3;
   const STORES = {
     kv: { keyPath: 'key' },
     entries: { keyPath: 'id', index: ['date'] },
@@ -10,6 +10,7 @@ const DB = (() => {
     folders: { keyPath: 'id' },
     videos: { keyPath: 'id', index: ['folderId'] },
     weights: { keyPath: 'date' }, // Körpergewicht: ein Eintrag pro Tag
+    blobs: { keyPath: 'id' },     // Videodaten (getrennt von den Video-Infos)
   };
   let dbp = null;
 
@@ -52,6 +53,8 @@ const DB = (() => {
     del: (store, id) => tx(store, 'readwrite', (st) => wrap(st.delete(id))),
     clear: (store) => tx(store, 'readwrite', (st) => wrap(st.clear())),
     by: (store, index, value) => tx(store, 'readonly', (st) => wrap(st.index(index).getAll(value))),
+    keys: (store) => tx(store, 'readonly', (st) => wrap(st.getAllKeys())),
+    keysBy: (store, index, value) => tx(store, 'readonly', (st) => wrap(st.index(index).getAllKeys(value))),
     stores: Object.keys(STORES),
   };
 })();

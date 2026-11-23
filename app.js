@@ -161,7 +161,8 @@
   }
   $('#tabs').addEventListener('click', (e) => {
     const b = e.target.closest('button[data-tab]'); if (!b) return;
-    if (state.tab === b.dataset.tab) { state.folderId = null; state.workoutView = false; }
+    state.folderId = null;
+    if (state.tab === b.dataset.tab) state.workoutView = false;
     state.tab = b.dataset.tab;
     $$('#tabs button').forEach((x) => x.classList.toggle('active', x === b));
     render();
@@ -176,13 +177,23 @@
   async function render() {
     freeUrls();
     window.scrollTo(0, 0);
-    if (state.tab === 'today') await renderToday();
-    else if (state.tab === 'meals') await renderMeals();
-    else if (state.tab === 'training') await (state.workoutView && state.workout ? renderWorkout() : renderTraining());
-    else if (state.tab === 'weight') await renderWeight();
-    else if (state.tab === 'videos') await (state.folderId ? renderFolder() : renderFolders());
+    try {
+      if (state.tab === 'today') await renderToday();
+      else if (state.tab === 'meals') await renderMeals();
+      else if (state.tab === 'training') await (state.workoutView && state.workout ? renderWorkout() : renderTraining());
+      else if (state.tab === 'weight') await renderWeight();
+      else if (state.tab === 'videos') await (state.folderId ? renderFolder() : renderFolders());
+    } catch (err) {
+      view.innerHTML = `<div class="card empty"><b>Da ist etwas schiefgelaufen</b>${esc(err && err.message ? err.message : String(err))}<br><br>
+        <button class="btn secondary" data-act="dayToday">Zur Startseite</button></div>`;
+      console.error(err);
+    }
     syncNav();
   }
+  // show unexpected errors (so they can be reported with a screenshot)
+  const showError = (msg) => { const t = $('#toast'); t.textContent = 'Fehler: ' + msg; t.hidden = false; clearTimeout(toast.t); toast.t = setTimeout(() => { t.hidden = true; }, 6000); };
+  window.addEventListener('error', (e) => showError(e.message || 'unbekannt'));
+  window.addEventListener('unhandledrejection', (e) => showError((e.reason && e.reason.message) || String(e.reason)));
 
   // ================================================================ TODAY
   async function renderToday() {
@@ -646,15 +657,58 @@
   }
 
   // ================================================================ VIDEOS
+  // ---- video storage: infos in 'videos', the file itself as a real copy in 'blobs'.
+  // (iOS Safari keeps only a reference to a picked file; after a restart it is gone and
+  // reading such an entry breaks. A copied Blob is stored with its data.)
+  async function storeVideo(meta, file) {
+    const data = new Blob([await file.arrayBuffer()], { type: file.type || 'video/mp4' });
+    await DB.put('blobs', { id: meta.id, blob: data });
+    const { blob, ...info } = meta; void blob;
+    await DB.put('videos', info);
+  }
+  async function videoBlob(v) {
+    if (!v || v.broken) return null;
+    try { const r = await DB.get('blobs', v.id); if (r && r.blob) return r.blob; } catch {}
+    return v.blob || null; // entries from older versions
+  }
+  // videos of a folder, one by one, so a single damaged entry cannot break the list
+  async function videosIn(folderId) {
+    let keys = [];
+    try { keys = await DB.keysBy('videos', 'folderId', folderId); } catch { return []; }
+    const out = [];
+    for (const k of keys) {
+      try { const v = await DB.get('videos', k); if (v) out.push(v); }
+      catch { out.push({ id: k, folderId, title: 'Video defekt', broken: true, createdAt: 0 }); }
+    }
+    return out.sort((a, b) => a.createdAt - b.createdAt);
+  }
+  async function deleteVideo(id) {
+    try { await DB.del('blobs', id); } catch {}
+    await DB.del('videos', id);
+  }
+  // move videos saved by older versions into the new storage (once, in the background)
+  async function migrateVideos() {
+    let keys = [];
+    try { keys = await DB.keys('videos'); } catch { return; }
+    for (const k of keys) {
+      let v;
+      try { v = await DB.get('videos', k); } catch { continue; }
+      if (!v || !v.blob) continue;
+      try { await storeVideo(v, v.blob); }
+      catch { const { blob, ...info } = v; void blob; info.broken = true; try { await DB.put('videos', info); } catch {} }
+    }
+  }
+
   async function renderFolders() {
     setHeader('Videos', { action: action('newFolder', ICON.plus) });
     const folders = (await DB.all('folders')).sort((a, b) => a.name.localeCompare(b.name));
-    const videos = await DB.all('videos');
+    const byFolder = {};
+    for (const f of folders) byFolder[f.id] = await videosIn(f.id);
     view.innerHTML = `
       <p class="hint">Lege Fächer an, z. B. „Pelvic Tilt“, und speichere darin deine Übungsvideos.</p>
       ${folders.length ? `<div class="folders">${folders.map((f) => {
-        const vs = videos.filter((v) => v.folderId === f.id).sort((a, b) => a.createdAt - b.createdAt);
-        const th = vs.find((v) => v.thumb);
+        const vs = byFolder[f.id] || [];
+        const th = vs.find((v) => v.thumb instanceof Blob);
         return `<button class="folder" data-act="folder" data-id="${f.id}">
           <div class="th">${th ? `<img src="${keepUrl(th.thumb)}" alt="">` : ICON.folder}</div>
           <div class="meta"><b>${esc(f.name)}</b><small>${vs.length} Video${vs.length === 1 ? '' : 's'}</small></div></button>`;
@@ -669,13 +723,13 @@
     const f = await DB.get('folders', state.folderId);
     if (!f) { state.folderId = null; return render(); }
     setHeader(f.name, { back: true, action: action('folderMenu', ICON.more) });
-    const vs = (await DB.by('videos', 'folderId', f.id)).sort((a, b) => a.createdAt - b.createdAt);
+    const vs = await videosIn(f.id);
     view.innerHTML = `
       <button class="btn" data-act="addVideo">${ICON.plus} Video hinzufügen</button>
       <div style="height:14px"></div>
       ${vs.length ? `<div class="vids">${vs.map((v) => `
         <button class="vid" data-act="video" data-id="${v.id}">
-          <div class="th">${v.thumb ? `<img src="${keepUrl(v.thumb)}" alt="">` : ''}<span class="play">${ICON.play}</span>${v.duration ? `<span class="dur">${durStr(v.duration)}</span>` : ''}</div>
+          <div class="th">${v.thumb instanceof Blob ? `<img src="${keepUrl(v.thumb)}" alt="">` : ''}${v.broken ? '<span class="dur" style="left:6px;right:auto;background:var(--danger)">defekt</span>' : `<span class="play">${ICON.play}</span>`}${v.duration ? `<span class="dur">${durStr(v.duration)}</span>` : ''}</div>
           <div class="t">${esc(v.title)}</div></button>`).join('')}</div>`
         : `<div class="card empty"><b>Noch keine Videos</b>Füge Videos aus deiner Galerie hinzu oder nimm direkt eins auf.</div>`}
     `;
@@ -719,7 +773,7 @@
       const meta = await videoMeta(file);
       const title = (file.name || 'Video').replace(/\.[^.]+$/, '').replace(/^(IMG|VID|MOV)_?/i, 'Video ').replace(/[_]+/g, ' ').trim();
       try {
-        await DB.put('videos', { id: uid(), folderId: state.folderId, title, blob: file, type: file.type, thumb: meta.thumb, duration: meta.duration, createdAt: Date.now() });
+        await storeVideo({ id: uid(), folderId: state.folderId, title, type: file.type, thumb: meta.thumb, duration: meta.duration, createdAt: Date.now() }, file);
       } catch (err) {
         alert('Video konnte nicht gespeichert werden (Speicher voll?).'); break;
       }
@@ -729,17 +783,28 @@
   });
 
   async function videoSheet(id) {
-    const v = await DB.get('videos', id); if (!v) return;
+    let v = null;
+    try { v = await DB.get('videos', id); } catch {}
+    if (!v || v.broken) {
+      openSheet(`
+        <h2>Video nicht verfügbar</h2>
+        <p class="hint">iOS hat die Datei dieses Videos gelöscht (passiert bei Videos, die mit einer älteren App-Version gespeichert wurden). Lösche den Eintrag und füge das Video neu hinzu – ab jetzt wird es dauerhaft gespeichert.</p>
+        <button class="btn danger" data-act="videoDel" data-id="${esc(id)}">Eintrag löschen</button>
+      `, { full: true, noFocus: true, title: 'Video' });
+      return;
+    }
+    const blob = await videoBlob(v);
     const folders = await DB.all('folders');
     openSheet(`
-      <video class="player" id="vPlayer" src="${keepUrl(v.blob)}" controls playsinline autoplay ${v.clipEnd > v.clipStart ? 'muted' : 'loop'}></video>
+      ${blob ? `<video class="player" id="vPlayer" src="${keepUrl(blob)}" controls playsinline autoplay ${v.clipEnd > v.clipStart ? 'muted' : 'loop'}></video>`
+        : '<div class="card empty"><b>Videodatei fehlt</b>Bitte das Video löschen und neu hinzufügen.</div>'}
       ${v.clipEnd > v.clipStart ? `<p class="hint" style="margin-top:-6px">Clip ${v.clipStart.toFixed(1)}–${v.clipEnd.toFixed(1)} s in Schleife ${v.ai ? '<span class="ai-tag">KI</span>' : ''} · <a href="#" id="vFull" style="color:var(--accent);font-weight:700">ganzes Video ansehen</a></p>` : ''}
       <label class="f"><span>Titel</span><input class="in" id="vTitle" value="${esc(v.title)}" autocomplete="off"></label>
       <label class="f"><span>Fach</span><select class="in" id="vFolder">${folders.map((f) => `<option value="${f.id}" ${f.id === v.folderId ? 'selected' : ''}>${esc(f.name)}</option>`).join('')}</select></label>
       <button class="btn" data-act="videoSave" data-id="${v.id}">Speichern</button>
       <button class="btn danger" data-act="videoDel" data-id="${v.id}">Video löschen</button>
     `, { full: true, noFocus: true, title: v.title });
-    if (v.clipEnd > v.clipStart) {
+    if (blob && v.clipEnd > v.clipStart) {
       const pl = $('#vPlayer'); loopClip(pl, v.clipStart, v.clipEnd);
       $('#vFull').addEventListener('click', (e) => { e.preventDefault(); const full = document.createElement('video'); Object.assign(full, { className: 'player', src: pl.src, controls: true, playsInline: true, autoplay: true }); pl.replaceWith(full); e.target.parentElement.remove(); });
     }
@@ -748,11 +813,17 @@
   // videos of a folder inside a sheet (e.g. during a workout)
   async function folderSheet(folderId) {
     const f = await DB.get('folders', folderId); if (!f) return;
-    const vs = (await DB.by('videos', 'folderId', folderId)).sort((a, b) => a.createdAt - b.createdAt);
+    const vs = await videosIn(folderId);
+    const items = [];
+    for (const v of vs) {
+      const blob = await videoBlob(v);
+      items.push(blob
+        ? `<video class="player" src="${keepUrl(blob)}" controls playsinline loop preload="metadata" ${v.thumb instanceof Blob ? `poster="${keepUrl(v.thumb)}"` : ''}></video><div class="hint" style="margin-top:-8px">${esc(v.title)}</div>`
+        : `<div class="card empty"><b>${esc(v.title)}</b>Video nicht verfügbar – im Video-Tab löschen und neu hinzufügen.</div>`);
+    }
     openSheet(`
       <h2>${esc(f.name)}</h2>
-      ${vs.length ? vs.map((v) => `<video class="player" src="${keepUrl(v.blob)}" controls playsinline loop preload="metadata" ${v.thumb ? `poster="${keepUrl(v.thumb)}"` : ''}></video><div class="hint" style="margin-top:-8px">${esc(v.title)}</div>`).join('')
-        : '<div class="card empty">In diesem Fach sind noch keine Videos.</div>'}
+      ${items.length ? items.join('') : '<div class="card empty">In diesem Fach sind noch keine Videos.</div>'}
       <button class="btn secondary" data-act="closeSheet">Schließen</button>
     `, { noFocus: true });
   }
@@ -775,9 +846,11 @@
   // fill all <video data-clip="id"> in a container
   async function mountClips(root) {
     for (const el of $$('video[data-clip]', root)) {
-      const v = await DB.get('videos', el.dataset.clip);
-      if (!v) { el.remove(); continue; }
-      el.src = keepUrl(v.blob);
+      let v = null;
+      try { v = await DB.get('videos', el.dataset.clip); } catch {}
+      const blob = await videoBlob(v);
+      if (!blob) { el.remove(); continue; }
+      el.src = keepUrl(blob);
       if (v.clipEnd > v.clipStart) loopClip(el, v.clipStart, v.clipEnd);
     }
   }
@@ -965,7 +1038,7 @@
 
   async function exportData() {
     const data = {};
-    for (const s of DB.stores) if (s !== 'videos') data[s] = await DB.all(s);
+    for (const s of DB.stores) if (s !== 'videos' && s !== 'blobs') data[s] = await DB.all(s);
     data.kv = data.kv.map((r) => (r.key === 'settings' ? { ...r, value: { ...r.value, apiKey: undefined } } : r));
     const blob = new Blob([JSON.stringify({ app: 'FitBox', version: 1, exportedAt: new Date().toISOString(), data }, null, 1)], { type: 'application/json' });
     const name = `fitbox-sicherung-${today()}.json`;
@@ -983,7 +1056,7 @@
       if (j.app !== 'FitBox' || !j.data) throw new Error('kein FitBox-Backup');
       if (!confirm('Sicherung importieren? Aktuelle Einträge, Mahlzeiten und Pläne werden ersetzt (Videos bleiben).')) return;
       const keepKey = state.settings.apiKey;
-      for (const s of Object.keys(j.data)) { if (s === 'videos' || !DB.stores.includes(s)) continue; await DB.clear(s); for (const o of j.data[s]) await DB.put(s, o); }
+      for (const s of Object.keys(j.data)) { if (s === 'videos' || s === 'blobs' || !DB.stores.includes(s)) continue; await DB.clear(s); for (const o of j.data[s]) await DB.put(s, o); }
       if (keepKey) { const st = { ...(await kvGet('settings', {})), apiKey: keepKey }; await kvSet('settings', st); }
       await boot(); closeSheet(); toast('Sicherung importiert');
     } catch (err) { alert('Import fehlgeschlagen: ' + err.message); }
@@ -1108,9 +1181,9 @@
       let folder = (await DB.all('folders')).find((f) => f.name.toLowerCase() === folderName.toLowerCase());
       if (!folder) { folder = { id: uid(), name: folderName, createdAt: Date.now() }; await DB.put('folders', folder); }
       const meta = await videoMeta(job.file);
-      const video = { id: uid(), folderId: folder.id, title: name, blob: job.file, type: job.file.type, thumb: meta.thumb, duration: meta.duration || job.duration,
+      const video = { id: uid(), folderId: folder.id, title: name, type: job.file.type, thumb: meta.thumb, duration: meta.duration || job.duration,
         clipStart: job.start, clipEnd: job.end, ai: !!job.ai, createdAt: Date.now() };
-      await DB.put('videos', video);
+      await storeVideo(video, job.file);
       const ex = newExercise();
       Object.assign(ex, { name, muscle: $('#cxMuscle').value.trim(), sets: $('#cxSets').value || '3', reps: $('#cxReps').value || '10', folderId: folder.id, videoId: video.id, note: job.ai && job.ai.tip ? job.ai.tip : '' });
       // replace an empty placeholder exercise, otherwise append
@@ -1232,7 +1305,7 @@
     },
     folderDel: async (d) => {
       if (!confirm('Fach und alle Videos darin wirklich löschen?')) return;
-      for (const v of await DB.by('videos', 'folderId', d.id)) await DB.del('videos', v.id);
+      for (const k of await DB.keysBy('videos', 'folderId', d.id)) await deleteVideo(k);
       await DB.del('folders', d.id); state.folderId = null; closeSheet(); toast('Fach gelöscht'); render();
     },
     addVideo: () => $('#videoInput').click(),
@@ -1242,7 +1315,7 @@
       v.title = $('#vTitle').value.trim() || v.title; v.folderId = $('#vFolder').value || v.folderId;
       await DB.put('videos', v); closeSheet(); toast('Gespeichert'); render();
     },
-    videoDel: async (d) => { if (!confirm('Video löschen?')) return; await DB.del('videos', d.id); closeSheet(); toast('Video gelöscht'); render(); },
+    videoDel: async (d) => { if (!confirm('Video löschen?')) return; await deleteVideo(d.id); closeSheet(); toast('Video gelöscht'); render(); },
   };
 
   let scrollY0 = 0;
@@ -1267,6 +1340,7 @@
     state.settings = { ...state.settings, ...(await kvGet('settings', {})) };
     state.workout = await kvGet('activeWorkout', null);
     render();
+    migrateVideos().catch(() => {});
   }
   // a new day while the app stays open
   document.addEventListener('visibilitychange', () => { if (!document.hidden && state.tab === 'today' && state.date !== today() && !sheet.innerHTML) { state.date = today(); render(); } });
