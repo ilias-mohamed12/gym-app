@@ -1,5 +1,5 @@
 // Offline support: cache the app shell. Data lives in IndexedDB, not here.
-const CACHE = 'fitbox-v6';
+const CACHE = 'fitbox-v7';
 const FILES = ['./', 'index.html', 'app.css', 'app.js', 'db.js', 'templates.js', 'manifest.webmanifest', 'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png', 'vendor/anthropic-sdk.mjs'];
 
 self.addEventListener('install', (e) => {

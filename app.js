@@ -273,7 +273,7 @@
         </div>`).join('')
         : `<div class="card empty"><b>Noch kein Trainingsplan</b>Leg z. B. „Oberkörper“ oder „Rücken & Becken“ an.</div>`}
       <button class="btn secondary" data-act="newPlan">${ICON.plus} Neuer Plan</button>
-      ${typeof TEMPLATES !== 'undefined' ? `<button class="btn secondary" data-act="loadTemplate" data-t="split6">📋 Vorlage laden: ${esc(TEMPLATES.split6.title)}</button>` : ''}
+      ${typeof TEMPLATES !== 'undefined' ? `<button class="btn secondary" data-act="loadTemplate" data-t="split6">📋 Vorlage laden / aktualisieren: ${esc(TEMPLATES.split6.title)}</button>` : ''}
       <div class="section-title">Verlauf</div>
       ${history.length ? `<div class="list">${history.map((w) => {
         const done = w.exercises.reduce((a, e) => a + e.sets.filter((s) => s.done).length, 0);
@@ -1023,18 +1023,36 @@
     exUp: async (d) => { readPlanEditor(); const ex = state.editPlan.exercises, i = +d.i; [ex[i - 1], ex[i]] = [ex[i], ex[i - 1]]; await drawPlanEditor(); },
     loadTemplate: async (d) => {
       const t = TEMPLATES[d.t]; if (!t) return;
-      const existing = new Set((await DB.all('plans')).map((p) => p.name.toLowerCase()));
-      const todo = t.plans.filter((p) => !existing.has(p.name.toLowerCase()));
-      if (!todo.length) { toast('Diese Pläne sind schon angelegt'); return; }
-      if (!confirm(`${t.title} laden?\n${todo.length} Pläne werden angelegt:\n${todo.map((p) => '• ' + p.name).join('\n')}`)) return;
+      const plans = await DB.all('plans');
+      const byName = new Map(plans.map((p) => [p.name.toLowerCase(), p]));
+      const todo = t.plans.filter((p) => !byName.has(p.name.toLowerCase()));
+      const update = t.plans.filter((p) => byName.has(p.name.toLowerCase()));
+      // video folders for warm-up exercises (created once, linked by name)
       const folders = await DB.all('folders');
-      const folderFor = (name) => { const f = folders.find((x) => x.name.toLowerCase() === name.toLowerCase()); return f ? f.id : ''; };
+      const folderId = async (name) => {
+        if (!name) return '';
+        let f = folders.find((x) => x.name.toLowerCase() === name.toLowerCase());
+        if (!f) { f = { id: uid(), name, createdAt: Date.now() + folders.length }; folders.push(f); await DB.put('folders', f); }
+        return f.id;
+      };
+      const toEx = async (e) => ({ id: uid(), name: e.name, sets: e.sets, reps: e.reps, weight: '', muscle: e.muscle, fixed: e.fixed || '',
+        folderId: e.video ? await folderId(e.video) : (folders.find((x) => x.name.toLowerCase() === e.name.toLowerCase()) || {}).id || '', note: '' });
+      let msg = `${t.title}\n`;
+      if (todo.length) msg += `\nNeu angelegt:\n${todo.map((p) => '• ' + p.name).join('\n')}\n`;
+      if (update.length) msg += `\nAufwärmen wird aktualisiert (Übungen, Gewichte und Verlauf bleiben):\n${update.map((p) => '• ' + p.name).join('\n')}\n`;
+      if (!confirm(msg + '\nFortfahren?')) return;
       let i = 0;
       for (const tp of todo) {
-        await DB.put('plans', { id: uid(), name: tp.name, days: tp.days, rotate: tp.rotate, rotateStart: weekIdx(today()), note: tp.note, createdAt: Date.now() + i++,
-          exercises: tp.exercises.map((e) => ({ id: uid(), name: e.name, sets: e.sets, reps: e.reps, weight: '', muscle: e.muscle, fixed: e.fixed || '', folderId: folderFor(e.name), note: '' })) });
+        const exercises = []; for (const e of tp.exercises) exercises.push(await toEx(e));
+        await DB.put('plans', { id: uid(), name: tp.name, days: tp.days, rotate: tp.rotate, rotateStart: weekIdx(today()), note: tp.note, createdAt: Date.now() + i++, exercises });
       }
-      toast(`${todo.length} Pläne angelegt`); render();
+      for (const tp of update) {
+        const plan = byName.get(tp.name.toLowerCase());
+        const warmups = []; for (const e of tp.exercises.filter((x) => x.fixed === 'start')) warmups.push(await toEx(e));
+        plan.exercises = [...warmups, ...plan.exercises.filter((x) => x.fixed !== 'start')];
+        await DB.put('plans', plan);
+      }
+      toast(todo.length ? `${todo.length} Pläne angelegt` : 'Aufwärmen aktualisiert'); render();
     },
     exFromVideo: () => { readPlanEditor(); $('#aiVideoInput').click(); },
     clipCancel: () => { state.clipJob = null; drawPlanEditor(); },
