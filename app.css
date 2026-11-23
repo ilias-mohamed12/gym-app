@@ -203,3 +203,12 @@ label.f span { display: block; font-size: 13px; font-weight: 700; color: var(--m
 .warm-badge { font-size: 11px; font-weight: 800; color: #0ea5e9; background: color-mix(in srgb, #0ea5e9 14%, transparent); padding: 3px 8px; border-radius: 99px; }
 .goal-hit { font-size: 14px; font-weight: 700; color: var(--accent); margin: 2px 0 8px; }
 .ex-run.warm { border-left: 4px solid #0ea5e9; }
+
+/* back navigation */
+.sheet-top { position: sticky; top: calc(-1 * (var(--safe-t) + 10px)); z-index: 3; display: flex; align-items: center; gap: 10px;
+  margin: calc(-1 * (var(--safe-t) + 10px)) -16px 12px; padding: calc(var(--safe-t) + 10px) 16px 10px;
+  background: color-mix(in srgb, var(--bg) 92%, transparent); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); border-bottom: 1px solid var(--line); }
+.back-btn { display: inline-flex; align-items: center; gap: 2px; border: 0; background: none; color: var(--accent); font-weight: 700; font-size: 17px; padding: 6px 8px 6px 0; }
+.back-btn svg { width: 22px; height: 22px; }
+.sheet-top-title { flex: 1; text-align: right; font-weight: 700; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sheet-x { position: absolute; top: 10px; right: 12px; width: 34px; height: 34px; border-radius: 50%; border: 0; background: var(--field); color: var(--muted); font-size: 16px; font-weight: 700; }

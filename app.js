@@ -96,19 +96,62 @@
   }
 
   // ---------------------------------------------------------------- sheet
+  // full-screen sheets get a sticky "Zurück" bar, bottom sheets a close button
   function openSheet(html, opt = {}) {
+    const keepScroll = opt.keepScroll ? sheet.scrollTop : 0;
     sheet.className = 'sheet' + (opt.full ? ' full' : '');
-    sheet.innerHTML = (opt.full ? '' : '<div class="grab"></div>') + html;
+    const top = opt.full
+      ? `<div class="sheet-top"><button class="back-btn" data-act="sheetBack" aria-label="Zurück">${ICON.left}<span>Zurück</span></button>${opt.title ? `<span class="sheet-top-title">${esc(opt.title)}</span>` : ''}</div>`
+      : `<div class="grab"></div><button class="sheet-x" data-act="sheetBack" aria-label="Schließen">✕</button>`;
+    sheet.innerHTML = (opt.noBack ? '' : top) + html;
     sheet.hidden = false; sheetBg.hidden = !!opt.full;
-    sheet.scrollTop = 0;
+    sheet.scrollTop = keepScroll;
     const first = $('[autofocus]', sheet); if (first && !opt.noFocus) setTimeout(() => first.focus(), 250);
+    syncNav();
   }
   function closeSheet() {
     $$('video', sheet).forEach((v) => v.pause());
     sheet.hidden = true; sheetBg.hidden = true; sheet.innerHTML = '';
-    state.editPlan = null;
+    state.editPlan = null; state.editPlanOrig = null; state.clipJob = null;
+    syncNav();
   }
-  sheetBg.addEventListener('click', closeSheet);
+  sheetBg.addEventListener('click', () => goBack());
+
+  // ---------------------------------------------------------------- back navigation
+  // Every level (sub view, sheet, clip editor) gets a browser history entry, so the
+  // iOS edge swipe / Android back button and the "Zurück" buttons all go one level up.
+  let pushed = 0, ignorePop = 0, inPop = false;
+  const navDepth = () =>
+    ((state.tab === 'videos' && state.folderId) || (state.tab === 'training' && state.workoutView && state.workout) ? 1 : 0) +
+    (sheet.hidden ? 0 : 1) + (state.clipJob && !sheet.hidden ? 1 : 0);
+  function syncNav() {
+    if (inPop) return;
+    const d = navDepth();
+    if (d > pushed) { for (let i = pushed; i < d; i++) history.pushState({ fitbox: i + 1 }, ''); pushed = d; }
+    else if (d < pushed) { ignorePop++; history.go(d - pushed); pushed = d; }
+  }
+  const planDirty = () => { if (!state.editPlan || !state.editPlanOrig) return false; readPlanEditor(); return JSON.stringify(state.editPlan) !== state.editPlanOrig; };
+  async function goBack() {
+    if (!sheet.hidden) {
+      if (state.clipJob) { await actions.clipCancel(); return; }
+      if (planDirty()) {
+        if (confirm('Änderungen am Plan speichern?\n\nOK = speichern · Abbrechen = verwerfen')) { await actions.planSave(); return; }
+      }
+      closeSheet(); return;
+    }
+    if (state.tab === 'videos' && state.folderId) { state.folderId = null; return render(); }
+    if (state.tab === 'training' && state.workoutView) { state.workoutView = false; return render(); }
+  }
+  window.addEventListener('popstate', async () => {
+    if (ignorePop) { ignorePop--; return; }
+    const target = Math.max(0, pushed - 1);
+    inPop = true;
+    try { await goBack(); } finally { inPop = false; }
+    pushed = target;
+    const d = navDepth();
+    if (d > pushed) { for (let i = pushed; i < d; i++) history.pushState({ fitbox: i + 1 }, ''); pushed = d; } // e.g. plan could not be saved
+    else if (d < pushed) { ignorePop++; history.go(d - pushed); pushed = d; }
+  });
 
   // ---------------------------------------------------------------- header + tabs
   function setHeader(title, { back = false, action = '' } = {}) {
@@ -123,11 +166,7 @@
     $$('#tabs button').forEach((x) => x.classList.toggle('active', x === b));
     render();
   });
-  $('#backBtn').addEventListener('click', () => {
-    if (state.tab === 'videos') state.folderId = null;
-    if (state.tab === 'training') state.workoutView = false;
-    render();
-  });
+  $('#backBtn').addEventListener('click', () => goBack());
   $('#actionBtn').addEventListener('click', () => {
     const a = $('#actionBtn').dataset.act;
     if (a && actions[a]) actions[a]({});
@@ -137,11 +176,12 @@
   async function render() {
     freeUrls();
     window.scrollTo(0, 0);
-    if (state.tab === 'today') return renderToday();
-    if (state.tab === 'meals') return renderMeals();
-    if (state.tab === 'training') return state.workoutView && state.workout ? renderWorkout() : renderTraining();
-    if (state.tab === 'weight') return renderWeight();
-    if (state.tab === 'videos') return state.folderId ? renderFolder() : renderFolders();
+    if (state.tab === 'today') await renderToday();
+    else if (state.tab === 'meals') await renderMeals();
+    else if (state.tab === 'training') await (state.workoutView && state.workout ? renderWorkout() : renderTraining());
+    else if (state.tab === 'weight') await renderWeight();
+    else if (state.tab === 'videos') await (state.folderId ? renderFolder() : renderFolders());
+    syncNav();
   }
 
   // ================================================================ TODAY
@@ -288,6 +328,8 @@
     state.editPlan = isNew ? { id: uid(), name: '', exercises: [], createdAt: Date.now(), isNew: true } : JSON.parse(JSON.stringify(p));
     if (isNew) state.editPlan.exercises.push(newExercise());
     await drawPlanEditor();
+    readPlanEditor(); // normalise values as the inputs return them, so 'nothing changed' compares equal
+    state.editPlanOrig = JSON.stringify(state.editPlan);
   }
   const newExercise = () => ({ id: uid(), name: '', sets: 3, reps: '10', weight: '', folderId: '', note: '' });
 
@@ -332,8 +374,8 @@
       <div style="height:10px"></div>
       <button class="btn" data-act="planSave">Plan speichern</button>
       ${p.isNew ? '' : `<button class="btn danger" data-act="planDel">Plan löschen</button>`}
-      <button class="btn danger" data-act="closeSheet" style="color:var(--muted)">Abbrechen</button>
-    `, { full: true });
+      <button class="btn danger" data-act="sheetBack" style="color:var(--muted)">Zurück</button>
+    `, { full: true, title: p.name || 'Neuer Plan', keepScroll: true });
     mountClips(sheet);
   }
   // read the editor fields back into state.editPlan
@@ -690,17 +732,13 @@
     const v = await DB.get('videos', id); if (!v) return;
     const folders = await DB.all('folders');
     openSheet(`
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
-        <button class="icon-btn" data-act="closeSheet" aria-label="Schließen">${ICON.left}</button>
-        <h2 style="margin:0;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(v.title)}</h2>
-      </div>
       <video class="player" id="vPlayer" src="${keepUrl(v.blob)}" controls playsinline autoplay ${v.clipEnd > v.clipStart ? 'muted' : 'loop'}></video>
       ${v.clipEnd > v.clipStart ? `<p class="hint" style="margin-top:-6px">Clip ${v.clipStart.toFixed(1)}–${v.clipEnd.toFixed(1)} s in Schleife ${v.ai ? '<span class="ai-tag">KI</span>' : ''} · <a href="#" id="vFull" style="color:var(--accent);font-weight:700">ganzes Video ansehen</a></p>` : ''}
       <label class="f"><span>Titel</span><input class="in" id="vTitle" value="${esc(v.title)}" autocomplete="off"></label>
       <label class="f"><span>Fach</span><select class="in" id="vFolder">${folders.map((f) => `<option value="${f.id}" ${f.id === v.folderId ? 'selected' : ''}>${esc(f.name)}</option>`).join('')}</select></label>
       <button class="btn" data-act="videoSave" data-id="${v.id}">Speichern</button>
       <button class="btn danger" data-act="videoDel" data-id="${v.id}">Video löschen</button>
-    `, { full: true, noFocus: true });
+    `, { full: true, noFocus: true, title: v.title });
     if (v.clipEnd > v.clipStart) {
       const pl = $('#vPlayer'); loopClip(pl, v.clipStart, v.clipEnd);
       $('#vFull').addEventListener('click', (e) => { e.preventDefault(); const full = document.createElement('video'); Object.assign(full, { className: 'player', src: pl.src, controls: true, playsInline: true, autoplay: true }); pl.replaceWith(full); e.target.parentElement.remove(); });
@@ -856,7 +894,7 @@
       <div style="height:12px"></div>
       <button class="btn" data-act="clipAccept">Übung übernehmen</button>
       <button class="btn danger" data-act="clipCancel" style="color:var(--muted)">Abbrechen</button>
-    `, { full: true, noFocus: true });
+    `, { full: true, noFocus: true, title: 'Neue Übung aus Video' });
     const v = $('#clipPreview'), s = $('#clipStart'), l = $('#clipLen'), info = $('#clipInfo');
     v.src = keepUrl(job.file);
     const update = () => {
@@ -871,13 +909,14 @@
     v.addEventListener('ended', () => { v.currentTime = job.start; v.play().catch(() => {}); });
     requestAnimationFrame(tick);
     state.clipJob = job;
+    syncNav();
   }
 
   $('#aiVideoInput').addEventListener('change', async (e) => {
     const file = e.target.files[0]; e.target.value = '';
     if (!file || !state.editPlan) return;
     const job = { file, name: '', muscle: '', sets: '3', reps: '10', start: 0, end: 3, duration: 0, ai: null, error: '' };
-    openSheet(`<h2>Video wird analysiert…</h2><div class="spinner"></div><p class="hint" style="text-align:center" id="aiStatus">Einzelbilder werden vorbereitet</p>`, { full: true, noFocus: true });
+    openSheet(`<h2>Video wird analysiert…</h2><div class="spinner"></div><p class="hint" style="text-align:center" id="aiStatus">Einzelbilder werden vorbereitet</p>`, { full: true, noFocus: true, noBack: true });
     let Anthropic = null;
     try {
       const { duration, frames } = await extractFrames(file);
@@ -953,6 +992,7 @@
   // ================================================================ ACTIONS
   const actions = {
     closeSheet,
+    sheetBack: () => goBack(),
     // today
     dayPrev: () => { state.date = addDays(state.date, -1); render(); },
     dayNext: () => { if (state.date < today()) { state.date = addDays(state.date, 1); render(); } },
@@ -1059,7 +1099,7 @@
       toast(todo.length ? `${todo.length} Pläne angelegt` : 'Pläne aktualisiert'); render();
     },
     exFromVideo: () => { readPlanEditor(); $('#aiVideoInput').click(); },
-    clipCancel: () => { state.clipJob = null; drawPlanEditor(); },
+    clipCancel: async () => { state.clipJob = null; await drawPlanEditor(); },
     clipAccept: async () => {
       const job = state.clipJob, p = state.editPlan; if (!job || !p) return;
       const name = $('#cxName').value.trim(); if (!name) { $('#cxName').focus(); toast('Bitte die Übung benennen'); return; }
