@@ -1,23 +1,13 @@
-// Plan-Vorlagen. "fixed": 'start' = immer am Anfang (Aufwärmen), 'end' = immer am Ende (wird nicht rotiert).
+// Plan-Vorlagen. "fixed": 'end' = immer am Ende (wird nicht rotiert). Aufwärmen = Video-Fächer (warmFolders).
 // Tage: 0 = Mo … 6 = So.
 const TEMPLATES = (() => {
-  const W = (name, sets, reps, muscle = 'Aufwärmen') => ({ name, sets, reps, muscle, fixed: 'start' });
   const X = (name, sets, reps, muscle, fixed = '') => ({ name, sets, reps, muscle, fixed });
 
-  // Aufwärmen / Korrektur gegen Rippen-Flare und Hohlkreuz (anteriore Beckenkippung).
-  // "video": Name des Video-Fachs, das beim Laden angelegt und verknüpft wird.
-  const warmCore = [
-    { ...W('Dead Hang', 2, '30–45 s'), video: 'Dead Hang' },
-    W('90/90 Atmung', 2, '5 Atemzüge'),
-    W('Dead Bug', 2, '8/Seite'),
-    { ...W('Pelvic Tilt & Glute Bridge', 2, '12'), video: 'Pelvic Tilt & Glute Bridge' },
-    { ...W('Hohlkreuz-Routine (4 Übungen)', 1, '1 Runde'), video: 'Hohlkreuz-Routine (4 Übungen)' },
-  ];
-  const warm = {
-    push: W('Serratus Wall Slides', 2, '10'),
-    pull: W('Band Pull-Aparts', 2, '15'),
-    legs: { ...W('Leg-Day Dehnroutine', 1, '1 Runde'), video: 'Leg-Day Dehnroutine' },
-  };
+  // Aufwärmen läuft über Video-Fächer (nicht als Übungen im Plan).
+  // Diese Fächer werden beim Laden angelegt und im Training oben als „Aufwärmen“ verlinkt.
+  const warmAll = ['Dead Hang', 'Pelvic Tilt & Glute Bridge', 'Hohlkreuz-Routine (4 Übungen)'];
+  const warmLegs = [...warmAll, 'Leg-Day Dehnroutine'];
+  const warm = { push: warmAll, pull: warmAll, legs: warmLegs };
   const note = '1–2 Wdh. im Tank · obere Wdh.-Grenze in allen Sätzen erreicht → Gewicht erhöhen';
 
   const split6 = [
@@ -73,8 +63,8 @@ const TEMPLATES = (() => {
     split6: {
       title: 'Mein 6-Tage-Plan',
       subtitle: 'Push A · Pull A · Beine A · Push B · Pull B · Brust + Beine B (Mo–Sa, So Ruhe) mit Aufwärmen gegen Rippen-Flare & Hohlkreuz',
-      version: 2,
-      plans: split6.map((d) => ({ name: d.name, days: d.days, rotate: true, note, exercises: [...warmCore, warm[d.warm], ...d.ex] })),
+      version: 3,
+      plans: split6.map((d) => ({ name: d.name, days: d.days, rotate: true, note, warmFolders: warm[d.warm], exercises: d.ex })),
     },
   };
 })();

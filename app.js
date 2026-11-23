@@ -371,6 +371,7 @@
     state.workout = {
       id: uid(), planId, planName: plan.name, date: today(), startedAt: Date.now(),
       planNote: plan.note || '',
+      warmFolders: plan.warmFolders || [],
       rotationFirst: plan.rotate && rotation(plan).n > 1 ? groupLabel(rotation(plan).groups[0]) : '',
       exercises: rotation(plan).exercises.map((e) => {
         const prev = last && last.exercises.find((x) => x.name === e.name);
@@ -405,6 +406,8 @@
         <div style="flex:1"><div class="sub" style="color:var(--muted);font-size:14px">Sätze</div><div style="font-size:24px;font-weight:800">${done} / ${total}</div>
           <div class="progress"><i style="width:${total ? (done / total) * 100 : 0}%"></i></div></div>
       </div>
+      ${(w.warmFolders || []).filter((id) => folders[id]).length ? `<div class="card" style="padding:12px 14px"><div class="section-title" style="margin:0 0 8px">Aufwärmen</div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px">${w.warmFolders.filter((id) => folders[id]).map((id) => `<button class="chip-link" data-act="folderSheet" data-id="${id}">${ICON.video} ${esc(folders[id].name)}</button>`).join('')}</div></div>` : ''}
       ${w.planNote ? `<p class="hint" style="margin-top:0">💡 ${esc(w.planNote)}</p>` : ''}
       ${w.rotationFirst ? `<p class="hint" style="margin-top:0">${ICON.rotate.replace('<svg ', '<svg style="width:14px;height:14px;vertical-align:-2px" ')} Diese Woche zuerst: <b style="color:var(--text)">${esc(w.rotationFirst)}</b></p>` : ''}
       ${w.exercises.map((e, ei) => `
@@ -1037,22 +1040,23 @@
       };
       const toEx = async (e) => ({ id: uid(), name: e.name, sets: e.sets, reps: e.reps, weight: '', muscle: e.muscle, fixed: e.fixed || '',
         folderId: e.video ? await folderId(e.video) : (folders.find((x) => x.name.toLowerCase() === e.name.toLowerCase()) || {}).id || '', note: '' });
+      const warmIds = async (names) => { const ids = []; for (const n of names || []) ids.push(await folderId(n)); return ids; };
       let msg = `${t.title}\n`;
       if (todo.length) msg += `\nNeu angelegt:\n${todo.map((p) => '• ' + p.name).join('\n')}\n`;
-      if (update.length) msg += `\nAufwärmen wird aktualisiert (Übungen, Gewichte und Verlauf bleiben):\n${update.map((p) => '• ' + p.name).join('\n')}\n`;
+      if (update.length) msg += `\nAktualisiert – Aufwärmen kommt als Video-Fächer, Aufwärmübungen werden aus dem Plan entfernt (deine Übungen, Gewichte und der Verlauf bleiben):\n${update.map((p) => '• ' + p.name).join('\n')}\n`;
       if (!confirm(msg + '\nFortfahren?')) return;
       let i = 0;
       for (const tp of todo) {
         const exercises = []; for (const e of tp.exercises) exercises.push(await toEx(e));
-        await DB.put('plans', { id: uid(), name: tp.name, days: tp.days, rotate: tp.rotate, rotateStart: weekIdx(today()), note: tp.note, createdAt: Date.now() + i++, exercises });
+        await DB.put('plans', { id: uid(), name: tp.name, days: tp.days, rotate: tp.rotate, rotateStart: weekIdx(today()), note: tp.note, warmFolders: await warmIds(tp.warmFolders), createdAt: Date.now() + i++, exercises });
       }
       for (const tp of update) {
         const plan = byName.get(tp.name.toLowerCase());
-        const warmups = []; for (const e of tp.exercises.filter((x) => x.fixed === 'start')) warmups.push(await toEx(e));
-        plan.exercises = [...warmups, ...plan.exercises.filter((x) => x.fixed !== 'start')];
+        plan.exercises = plan.exercises.filter((x) => x.fixed !== 'start');
+        plan.warmFolders = await warmIds(tp.warmFolders);
         await DB.put('plans', plan);
       }
-      toast(todo.length ? `${todo.length} Pläne angelegt` : 'Aufwärmen aktualisiert'); render();
+      toast(todo.length ? `${todo.length} Pläne angelegt` : 'Pläne aktualisiert'); render();
     },
     exFromVideo: () => { readPlanEditor(); $('#aiVideoInput').click(); },
     clipCancel: () => { state.clipJob = null; drawPlanEditor(); },
