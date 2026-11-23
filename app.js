@@ -74,7 +74,7 @@
   const state = {
     tab: 'today',
     date: today(),
-    settings: { kcalGoal: 2200, proteinGoal: 150, weightStep: 2.5, restSec: 90 },
+    settings: { kcalGoal: 2850, proteinGoal: 135, weightStep: 2.5, restSec: 90 },
     folderId: null,       // open video folder
     workoutView: false,   // showing the running workout
     workout: null,        // running workout (persisted)
